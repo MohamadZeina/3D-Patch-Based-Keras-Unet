@@ -11,16 +11,18 @@ from datetime import datetime
 from keras.utils import Sequence
 from keras.callbacks import TensorBoard
 from sklearn.preprocessing import StandardScaler
+import matplotlib.gridspec as gridspec
 
 class PatchSequence(Sequence):
-    """Takes a list of paths to niftis, and returns them in batches of patches"""
+    """Keras generator that takes a list of paths to niftis and
+    corresponding segmentations, either in SPM format (ie c1_..,
+    c2_.., c3_..) or BraTS format. """
 
     def __init__(self, x_lists, y_lists, batch_size,
                  patch_size, stride, volumes_to_analyse, first_vol=0, unet=True,
                  validation=False, secondary_input=True, spatial_offset=0,
                  randomise_spatial_offset=False, reslice_isotropic=0, x_only=False,
-                 prediction=False, shuffle=True, verbose=True, BraTS_like_y=False,
-                 flip_gradients=False, slice_volume=(0, 0,  0, 0,  0, 0)):
+                 prediction=False, shuffle=True, verbose=True, BraTS_like_y=False):
 
         # Load arguments into class variables
         # todo: add a try except here, which catches non-lists fed in
@@ -61,8 +63,6 @@ class PatchSequence(Sequence):
         self.shuffle = shuffle
         self.verbose = verbose
         self.BraTS_like_y = BraTS_like_y
-        self.flip_gradients = flip_gradients
-        self.slice_volume = slice_volume
 
         # Ensures a volume is loaded on first request
         self.x_volume_needed = True
@@ -192,11 +192,6 @@ class PatchSequence(Sequence):
         linear_gradients = [self.spatial_offset_func(grad) for grad in linear_gradients]
         linear_gradients = np.moveaxis(linear_gradients, 0, 3)
 
-        # This is in case you trained on brains in one orientation, but wish to test
-        #  on brains in a mirrored orientation
-        if self.flip_gradients:
-            linear_gradients = np.flip(linear_gradients, 1)
-
         return linear_gradients
 
     def reslice(self, volume):
@@ -212,7 +207,7 @@ class PatchSequence(Sequence):
         return volume
 
     def spatial_offset_func(self, volume):
-        """Crops the volume by self.spatial_offset, the pads it in
+        """Crops the volume by self.spatial_offset, then pads it in
         the other direction to preserve dimensions"""
 
         if self.spatial_offset == 0:
@@ -235,13 +230,6 @@ class PatchSequence(Sequence):
 
         volume = self.spatial_offset_func(volume)
         volume = self.reslice(volume)
-
-        #if self.slice_volume == (0, 0,  0, 0,  0, 0):
-        #    volume = volume
-        #else:
-        #    volume = volume[self.slice_volume[0]:self.slice_volume[1],
-        #                  self.slice_volume[2]:self.slice_volume[3],
-        #                  self.slice_volume[4]:self.slice_volume[5]]
 
         dims = volume.shape
         leeway = 20
@@ -743,17 +731,14 @@ class PatchSequence(Sequence):
 
 class UnetEvaluator(PatchSequence):
 
-    def __init__(self, model, BraTS_like_y=False, batch_size=1, flip_gradients=False,
-                 print_every_overlap=False, slice_volume=(0, 0,  0, 0,  0, 0)):
+    def __init__(self, model, BraTS_like_y=False, batch_size=1,
+                 print_every_overlap=False):
 
         # Make class variables from arguments
         self.model = model
         self.patch_size = model.layers[0].input_shape[1]
         self.BraTS_like_y = BraTS_like_y
-        self.flip_gradients = flip_gradients
         self.print_every_overlap = print_every_overlap
-        self.slice_volume = slice_volume
-
         # Since this is a unet - for now, I don't want to predict overlapping patches
         self.stride = self.patch_size
         self.secondary_input = True # Removed as a argument, because I don't imagine ever changing it
@@ -777,11 +762,10 @@ class UnetEvaluator(PatchSequence):
     def unpad(self, volume):
         """Removes padding added during generation"""
         vol_dims = volume.shape
-        dims_to_pad = self.dims_to_pad
 
         dims_from = [dim // 2 for dim in self.dims_to_pad]
         dims_to = [-dim // 2 for dim in self.dims_to_pad]
-        dims_to = [dim if dim > 0  else vol_dims[i] for (i, dim) in enumerate(dims_to)]
+        dims_to = [dim if dim > 0 else vol_dims[i] for (i, dim) in enumerate(dims_to)]
 
         volume = volume[dims_from[0]: dims_to[0],
                         dims_from[1]: dims_to[1],
@@ -799,8 +783,7 @@ class UnetEvaluator(PatchSequence):
             batch_size=self.batch_size, patch_size=self.patch_size,
             stride=self.stride, volumes_to_analyse=1,
             secondary_input=self.secondary_input, spatial_offset=spatial_offset,
-            x_only=True, prediction=True, shuffle=False, verbose=False,
-            flip_gradients=self.flip_gradients, slice_volume=self.slice_volume)
+            x_only=True, prediction=True, shuffle=False, verbose=False)
 
         self.patch_arrangement = generator.patch_arrangement
         self.total_patches = self.patch_arrangement[0] * self.patch_arrangement[1] * self.patch_arrangement[2]
@@ -1008,10 +991,10 @@ class UnetEvaluator(PatchSequence):
                             discretised_prediction[:, :, :, :3],
                             SPM_volume])
 
-        #visualise_3_axes(raw_volumes_predicted, show = False)
-        #visualise_3_axes(averaged_prediction[:, :, :, :3], show = False)
-        #visualise_3_axes(discretised_prediction[:, :, :, :3], show = False)
-        #visualise_3_axes(SPM_volume, show = True)
+        # Display nice canonical images for e.g. poster presentations
+        visualise_canonical(raw_volumes_predicted)
+        visualise_canonical(averaged_prediction[:, :, :, :3])
+        visualise_canonical(SPM_volume)
 
         # Saves the predictions in the same directory as the raw image
         if save_avg:
@@ -1028,5 +1011,5 @@ class UnetEvaluator(PatchSequence):
 
             nib.save(pred_nifti, new_filename)
 
-        return averaged_prediction, SPM_volume, predicted_volume_still_in_batches
+        return averaged_prediction, discretised_prediction, SPM_volume, predicted_volume_still_in_batches
 
