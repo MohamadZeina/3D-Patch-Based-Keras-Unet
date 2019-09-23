@@ -59,8 +59,8 @@ class CategoriseBrats():
 
             for i, channel in enumerate(other_channels):
 
-                self.other_channels[i] = [
-                    file for file in self.full_file_paths if channel in file]
+                self.other_channels.append(
+                    [file for file in self.full_file_paths if channel in file])
 
 
 class PatchSequence(Sequence):
