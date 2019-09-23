@@ -13,6 +13,57 @@ from keras.utils import Sequence
 from keras.callbacks import TensorBoard
 from sklearn.preprocessing import StandardScaler
 
+def visualise_canonical(path):
+    """Displays 3 slices through different axes a nifti, or other
+    volume, in the style of SPM12"""
+
+    # Can take a path to a nifti or a volume
+    try:
+        volume = nib.load(path).get_data()
+    except:
+        volume = path
+
+    volume_shape = volume.shape
+
+    # Initialise figure
+    fig = plt.figure(figsize=(10, 10))
+
+    fig.patch.set_facecolor("white")
+    fig.patch.set_alpha(1)
+
+    # Gridspec used for finer control over spacing
+    gs1 = gridspec.GridSpec(2, 2)
+    gs1.update(wspace=0.025, hspace=0.05)
+
+    plt_axis_one = plt.subplot(gs1[0])
+    plt_axis_one.axis("off")
+
+    plt_axis_two = plt.subplot(gs1[1])
+    plt_axis_two.axis("off")
+
+    plt_axis_three = plt.subplot(gs1[2])
+    plt_axis_three.axis("off")
+
+    # Extract the middle slices of the raw image in each axis
+    axis_one = volume[int(volume_shape[0] / 2), :, :]
+    axis_two = volume[:, int(volume_shape[1] / 2), :]
+    axis_three = volume[:, :, int(volume_shape[2] / 2)]
+
+    # Align with SPM display option
+    axis_one = np.rot90(axis_one)
+    axis_one = np.flip(axis_one, axis=1)
+    axis_two = np.rot90(axis_two)
+    axis_three = np.rot90(axis_three)
+
+    # Plot axes
+    plt_axis_one.imshow(axis_two)
+    plt_axis_two.imshow(axis_one)
+    plt_axis_three.imshow(axis_three)
+
+    plt.show()
+
+    return
+
 class CategoriseBrats():
     """When initialised with a path to BraTS images, it will categorise the
     contained files into e.g. t1, t1ce, t2, flair, and seg. other_channels
