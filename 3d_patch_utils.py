@@ -7,11 +7,61 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from datetime import datetime
 from keras.utils import Sequence
 from keras.callbacks import TensorBoard
 from sklearn.preprocessing import StandardScaler
-import matplotlib.gridspec as gridspec
+
+class CategoriseBrats():
+    """When initialised with a path to BraTS images, it will categorise the
+    contained files into e.g. t1, t1ce, t2, flair, and seg. other_channels
+    allows this to work on other channels which you may have created. For
+    example, if you want an extra channel with a white matter, gray matter,
+    CSF segmentation you've created, with the suffix _WM_GM_CSF, set
+    other_channels=["_WM_GM_CSF"]
+
+    These can be accessed by, for example:
+
+    categorised_brats = CategoriseBrats(path)
+
+    categorised_brats.t1 # List of file paths to t1s
+    categorised_brats.t1ce # List of file paths to t1ces
+    categorised_brats.t2 # List of file paths to t2s
+    categorised_brats.flair # List of file paths to flairs
+    categorised_brats.seg # List of file paths to segmentations
+
+    # List of file paths to first extra channel you've specified
+    categorised_brats.other_channels[0]
+    """
+
+    def __init__(self, path, other_channels=None):
+        self.full_file_paths = []
+
+        for roots, dirs, files in os.walk(path):
+            self.full_file_paths.append([roots + "/" + file for file in files])
+
+        # Remove other files, like survival data and zipped files
+        self.full_file_paths = [files for files in self.full_file_paths if len(files) >= 4]
+
+        self.full_file_paths = np.concatenate(self.full_file_paths)
+
+        self.t1 = [file for file in self.full_file_paths if "t1.nii" in file]
+        self.t1ce = [file for file in self.full_file_paths if "t1ce.nii" in file]
+        self.t2 = [file for file in self.full_file_paths if "t2.nii" in file]
+        self.flair = [file for file in self.full_file_paths if "flair.nii" in file]
+        self.seg = [file for file in self.full_file_paths if "seg.nii" in file]
+
+        # Other, user specified channels not present in the BraTS data
+        if other_channels:
+
+            self.other_channels = []
+
+            for i, channel in enumerate(other_channels):
+
+                self.other_channels[i] = [
+                    file for file in self.full_file_paths if channel in file]
+
 
 class PatchSequence(Sequence):
     """Keras generator that takes a list of paths to niftis and
