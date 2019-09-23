@@ -64,6 +64,63 @@ def visualise_canonical(path):
 
     return
 
+class CategoriseNiftis():
+    """A class for categorising niftis segmented by SPM12 in MatLab. This
+    will create class atributes raw, seg_1, seg_2 and seg_3 for original
+    scan, white matter, grey matter, and CSF segmentations respectively. """
+
+    def __init__(self, path, require_oasis=True, require_string="."):
+        self.path = path
+
+        files = os.listdir(self.path)
+        files.sort()
+
+        self.raw = []
+        self.seg_1 = []
+        self.seg_2 = []
+        self.seg_3 = []
+        self.seg_4 = []
+
+        # TODO: rewrite more concisely as list comprehensions
+        for file in files:
+
+            if (file.endswith(".mat") or
+                    file.endswith(".json") or
+                    file.endswith(".jsn")):
+                continue
+
+            if "OAS3" not in file and require_oasis:
+                continue
+
+            if require_string not in file:
+                continue
+
+            # TODO: rewrite this to be more modular / useful for any user
+            # Broken or misregistered images, e.g. necks not heads, from
+            #  author's specific dataset.
+            if "OAS30288" in file or "OAS30038" in file \
+                or "OAS30131" in file or "OAS30581" in file\
+                or "OAS30920" in file or "OAS30001" in file:
+                continue
+
+            suffix = file[:2]
+            full_path = os.path.join(self.path, file)
+            if suffix == "c1":
+                self.seg_1.append(full_path)
+            elif suffix == "c2":
+                self.seg_2.append(full_path)
+            elif suffix == "c3":
+                self.seg_3.append(full_path)
+            elif suffix == "c4":
+                self.seg_4.append(full_path)
+            elif suffix == "c5":
+                pass
+            elif suffix == "wc":
+                pass
+            else:
+                self.raw.append(full_path)
+
+
 class CategoriseBrats():
     """When initialised with a path to BraTS images, it will categorise the
     contained files into e.g. t1, t1ce, t2, flair, and seg. other_channels
