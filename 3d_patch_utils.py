@@ -3,6 +3,7 @@ import re
 import time
 import socket
 import random
+import imageio
 import numpy as np
 import pandas as pd
 import nibabel as nib
@@ -69,7 +70,7 @@ class CategoriseNiftis():
     will create class atributes raw, seg_1, seg_2 and seg_3 for original
     scan, white matter, grey matter, and CSF segmentations respectively. """
 
-    def __init__(self, path, require_oasis=True, require_string="."):
+    def __init__(self, path, require_oasis=False, require_string="."):
         self.path = path
 
         files = os.listdir(self.path)
