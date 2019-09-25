@@ -23,5 +23,5 @@ Useful utilities for working with 3D data in patches. They utilities were design
 
 
 ## Acknowledgements
-Data above were provided by OASIS:
+Data provided during development by OASIS:
 * OASIS-3: Principal Investigators: T. Benzinger, D. Marcus, J. Morris; NIH P50AG00561, P30NS09857781, P01AG026276, P01AG003991, R01AG043434, UL1TR000448, R01EB009352. AV-45 doses were provided by Avid Radiopharmaceuticals, a wholly owned subsidiary of Eli Lilly.
