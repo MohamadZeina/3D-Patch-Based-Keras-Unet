@@ -7,6 +7,12 @@ Useful utilities for working with 3D data in patches. They utilities were design
  - PatchSequence: this is a keras generator, which inherits the "Sequence" class. This takes a list of file paths, and returns shuffled patches for training.
  - UnetEvaluator: this overrides PatchSequence. It contains various methods for evaluating models. For example, it might take a model and an unsegmented volume, segment it and display the output.
 
+Raw T1 image:
+![](raw_image.gif)
+
+Segmentation using patch-wise u-net:
+![](unet_segmentation.gif)
+
 ## Example Usage
 
     niftis_path = "/path/to/images" # Points to images which have been segmented in SPM 
