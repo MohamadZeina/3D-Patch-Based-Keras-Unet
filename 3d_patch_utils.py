@@ -716,11 +716,13 @@ class UnetEvaluator(PatchSequence):
 
     def unpad(self, volume):
         """Removes padding added during generation"""
+
         vol_dims = volume.shape
 
         dims_from = [dim // 2 for dim in self.dims_to_pad]
         dims_to = [-dim // 2 for dim in self.dims_to_pad]
-        dims_to = [dim if dim > 0 else vol_dims[i] for (i, dim) in enumerate(dims_to)]
+
+        #print("About to unpad from %s to %s" % (dims_from, dims_to))
 
         volume = volume[dims_from[0]: dims_to[0],
                         dims_from[1]: dims_to[1],
