@@ -13,6 +13,7 @@ from datetime import datetime
 from keras.utils import Sequence
 from keras.callbacks import TensorBoard
 from sklearn.preprocessing import StandardScaler
+from skimage import exposure
 
 def visualise_canonical(path):
     """Displays 3 slices through different axes a nifti, or other
@@ -181,7 +182,8 @@ class PatchSequence(Sequence):
                  patch_size, stride, volumes_to_analyse, first_vol=0, unet=True,
                  validation=False, secondary_input=True, spatial_offset=0,
                  randomise_spatial_offset=False, reslice_isotropic=0, x_only=False,
-                 prediction=False, shuffle=True, verbose=True, BraTS_like_y=False):
+                 prediction=False, shuffle=True, verbose=True, BraTS_like_y=False,
+                 histogram_equalise=False):
 
         # Load arguments into class variables
         # todo: add a try except here, which catches non-lists fed in
@@ -222,6 +224,7 @@ class PatchSequence(Sequence):
         self.shuffle = shuffle
         self.verbose = verbose
         self.BraTS_like_y = BraTS_like_y
+        self.histogram_equalise = histogram_equalise
 
         # Ensures a volume is loaded on first request
         self.x_volume_needed = True
@@ -476,6 +479,17 @@ class PatchSequence(Sequence):
         self.reverse_mapping_dict = reverse_mapping_dict
         return
 
+    def histogram_equalise_func(self, volume, n_bins=256):
+
+        if not self.histogram_equalise:
+            return volume
+
+        squashed_volume = np.reshape(volume, (volume.shape[0], volume.shape[1] * volume.shape[2]))
+        img_rescale = exposure.equalize_adapthist(squashed_volume, clip_limit=0.1)
+        img_rescale = np.reshape(img_rescale, volume.shape)
+
+        return img_rescale
+
     def patch_from_volume(self, index):
         """Only supports u-nets at the moment. Given an index, it will find
         and return the corresponding single patch for x and y"""
@@ -485,7 +499,8 @@ class PatchSequence(Sequence):
                 self.spatial_offset = np.random.randint(0, self.patch_size // 2)
                 #print("Spatial offset set to ", self.spatial_offset)
 
-            # If only one patient is given, it only has to loop over self.x_lists directlyt
+            # If only one patient is given, it only has to loop over self.x_lists directly
+            # TODO: simplify this by making simgle patient read as a list of 1
             if self.one_patient_only:
                 self.x_volumes = [
                     self.load_volume(path) for path in self.x_lists]
@@ -493,6 +508,7 @@ class PatchSequence(Sequence):
                 self.x_volumes = [
                     self.load_volume(path) for path in self.x_lists[self.next_x]]
 
+            self.x_volumes = [self.histogram_equalise_func(volume) for volume in self.x_volumes]
             self.x_volumes = [self.scale(volume) for volume in self.x_volumes]
 
             # Get linear gradients if secondary input require
