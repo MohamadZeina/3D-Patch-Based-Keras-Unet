@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import copy
+import pickle
 import socket
 import random
 import imageio
@@ -13,6 +15,7 @@ from datetime import datetime
 from keras.utils import Sequence
 from keras.callbacks import TensorBoard
 from sklearn.preprocessing import StandardScaler
+from scipy.ndimage.interpolation import zoom
 from skimage import exposure
 
 def visualise_canonical(path):
@@ -71,7 +74,7 @@ class CategoriseNiftis():
     will create class atributes raw, seg_1, seg_2 and seg_3 for original
     scan, white matter, grey matter, and CSF segmentations respectively. """
 
-    def __init__(self, path, require_oasis=False, require_string="."):
+    def __init__(self, path, require_oasis=False, require_string=".", exclude_string=None):
         self.path = path
 
         files = os.listdir(self.path)
@@ -87,14 +90,17 @@ class CategoriseNiftis():
         for file in files:
 
             if (file.endswith(".mat") or
-                    file.endswith(".json") or
-                    file.endswith(".jsn")):
+                file.endswith(".json") or
+                file.endswith(".jsn")):
                 continue
 
             if "OAS3" not in file and require_oasis:
                 continue
 
             if require_string not in file:
+                continue
+
+            if exclude_string and exclude_string in file:
                 continue
 
             # TODO: rewrite this to be more modular / useful for any user
@@ -121,6 +127,14 @@ class CategoriseNiftis():
                 pass
             else:
                 self.raw.append(full_path)
+
+    def three_segs(self, first_volume = 0):
+
+        three_segs_object = [self.seg_1[first_volume:],
+                      self.seg_2[first_volume:],
+                      self.seg_3[first_volume:]]
+
+        return three_segs_object
 
 
 class CategoriseBrats():
@@ -173,6 +187,31 @@ class CategoriseBrats():
                     [file for file in self.full_file_paths if channel in file])
 
 
+class Patcher():
+    """A convenience class used by patch wise data generators.
+    
+    Will take an equivalent patch from any supplied volume.
+
+    Example:
+
+    patcher = Patcher([i, j, k], self.patch_size)
+    t1_patch = patcher.patch(t1_volume)
+    seg_patch = patcher.patch(seg)
+    
+    """
+
+    def __init__(self, indices, patch_size):
+        self.idcs = indices
+        self.patch_size = patch_size
+
+    def patch(self, volume):
+        patch = volume[self.idcs[0]: self.idcs[0] + self.patch_size,
+                       self.idcs[1]: self.idcs[1] + self.patch_size,
+                       self.idcs[2]: self.idcs[2] + self.patch_size, ]
+
+        return patch
+
+
 class PatchSequence(Sequence):
     """Keras generator that takes a list of paths to niftis and
     corresponding segmentations, either in SPM format (ie c1_..,
@@ -183,7 +222,7 @@ class PatchSequence(Sequence):
                  validation=False, secondary_input=True, spatial_offset=0,
                  randomise_spatial_offset=False, reslice_isotropic=0, x_only=False,
                  prediction=False, shuffle=True, verbose=True, BraTS_like_y=False,
-                 histogram_equalise=False):
+                 histogram_equalise=False, CLAHE_clipping_limit=0.03):
 
         # Load arguments into class variables
         # todo: add a try except here, which catches non-lists fed in
@@ -225,6 +264,7 @@ class PatchSequence(Sequence):
         self.verbose = verbose
         self.BraTS_like_y = BraTS_like_y
         self.histogram_equalise = histogram_equalise
+        self.CLAHE_clipping_limit = CLAHE_clipping_limit
 
         # Ensures a volume is loaded on first request
         self.x_volume_needed = True
@@ -443,28 +483,6 @@ class PatchSequence(Sequence):
 
         return volume
 
-    class Patcher():
-        """Will take an equivalent patch from any supplied volume
-
-        Example:
-
-        patcher = Patcher([i, j, k], self.patch_size)
-        t1_patch = patcher.patch(t1_volume)
-        seg_patch = patcher.patch(seg)
-
-        """
-
-        def __init__(self, indices, patch_size):
-            self.idcs = indices
-            self.patch_size = patch_size
-
-        def patch(self, volume):
-            patch = volume[self.idcs[0]: self.idcs[0] + self.patch_size,
-                    self.idcs[1]: self.idcs[1] + self.patch_size,
-                    self.idcs[2]: self.idcs[2] + self.patch_size, ]
-
-            return patch
-
     def create_shuffling_dict(self, seed):
 
         random.seed(seed)
@@ -485,7 +503,7 @@ class PatchSequence(Sequence):
             return volume
 
         squashed_volume = np.reshape(volume, (volume.shape[0], volume.shape[1] * volume.shape[2]))
-        img_rescale = exposure.equalize_adapthist(squashed_volume, clip_limit=0.1)
+        img_rescale = exposure.equalize_adapthist(squashed_volume, clip_limit=self.CLAHE_clipping_limit)
         img_rescale = np.reshape(img_rescale, volume.shape)
 
         return img_rescale
@@ -573,7 +591,7 @@ class PatchSequence(Sequence):
         j = j_no * self.stride
         k = k_no * self.stride
 
-        patcher = self.Patcher([i, j, k], self.patch_size)
+        patcher = Patcher([i, j, k], self.patch_size)
 
         # Extract the y (label) information
         y_patches = [patcher.patch(volume) for volume in y_volumes]
@@ -703,7 +721,7 @@ class PatchSequence(Sequence):
 class UnetEvaluator(PatchSequence):
 
     def __init__(self, model, BraTS_like_y=False, batch_size=1,
-                 print_every_overlap=False):
+                 print_every_overlap=False, whole_volume=False, whole_volume_dims=None):
 
         # Make class variables from arguments
         self.model = model
@@ -714,6 +732,8 @@ class UnetEvaluator(PatchSequence):
         self.stride = self.patch_size
         self.secondary_input = True # Removed as a argument, because I don't imagine ever changing it
         self.batch_size = batch_size
+        self.whole_volume = whole_volume
+        self.whole_volume_dims = whole_volume_dims
 
         # Class variables that are necessary for inherited methods
         self.next_x = 0
@@ -751,12 +771,12 @@ class UnetEvaluator(PatchSequence):
         # Calculate number of modalities if not there already
         self.num_modalities = len(image_path)
 
-        generator = PatchSequence(
+        generator = PatchSequenceThreaded(
             image_path, image_path,
             batch_size=self.batch_size, patch_size=self.patch_size,
             stride=self.stride, volumes_to_analyse=1,
             secondary_input=self.secondary_input, spatial_offset=spatial_offset,
-            x_only=True, prediction=True, shuffle=False, verbose=False)
+            x_only=True, prediction=True)#, shuffle=False, verbose=False)
 
         self.patch_arrangement = generator.patch_arrangement
         self.total_patches = self.patch_arrangement[0] * self.patch_arrangement[1] * self.patch_arrangement[2]
@@ -770,22 +790,7 @@ class UnetEvaluator(PatchSequence):
 
         #print("The dimensions of predicted patches are: ", predicted_volume.shape)
 
-        # Re-initialise generator, then get raw images. It needs to be reinitialised
-        #  because it isn't designed for multiple objects using it consecutively
-        generator = PatchSequence(
-            image_path, image_path,
-            batch_size=self.batch_size, patch_size=self.patch_size,
-            stride=self.stride, volumes_to_analyse=1,
-            secondary_input=False, spatial_offset=spatial_offset,
-            x_only=True, prediction=True, shuffle=False, verbose=False)
-
-                 #(self, x_lists, y_lists, batch_size,
-                 #patch_size, stride, volumes_to_analyse, first_vol=0, unet=True,
-                 #validation=False, secondary_input=True, spatial_offset=0,
-                 #randomise_spatial_offset=False, reslice_isotropic=0, x_only=False,
-                 #prediction=False, shuffle=True, verbose=True, BraTS_like_y=False):
-
-        batches_predicted_on = [generator.__getitem__(batch) for batch in range(len(generator))]
+        batches_predicted_on = [generator.__getitem__(batch)[0] for batch in range(len(generator))]
         #print("Len of batchs_predicted_on straight after getting is ", len(batches_predicted_on))
         batches_predicted_on = np.array(np.concatenate(batches_predicted_on, axis=0))
         #print("The dimensions of the patches being predicted on (just after concat): ", batches_predicted_on.shape)
@@ -829,6 +834,31 @@ class UnetEvaluator(PatchSequence):
 
         return predicted_volume, raw_volume_patched, predicted_volume_still_in_batches
 
+    def predict_whole_volume(self, image_path):
+
+        if self.params:
+            generator = VolumeSequence(
+                [image_path], [image_path],
+                reslice_dims=self.whole_volume_dims, 
+                batch_size=1, volumes_to_analyse=1,
+                histogram_equalise=self.params["histogram_equalise"],
+                CLAHE_clipping_limit=self.params["CLAHE_clipping_limit"])
+        else:
+            generator = VolumeSequence(
+                [image_path], [image_path],
+                reslice_dims=self.whole_volume_dims, 
+                batch_size=1, volumes_to_analyse=1)
+
+        predicted_volume = self.model.predict_generator(generator, verbose=1)
+
+        raw_volume = generator.__getitem__(0)[0]
+
+        predicted_volume = np.mean(predicted_volume, axis=0)
+        raw_volume = np.mean(raw_volume, axis=0)
+        raw_volume = np.mean(raw_volume, axis=3)
+
+        return predicted_volume, raw_volume
+
     def predict_overlapping_volumes(self, image_path, overlapping_patches=5,
                                     spatial_offset=1):
         """Call "predict_volume" multiple times with different offsets, to
@@ -869,30 +899,46 @@ class UnetEvaluator(PatchSequence):
 
     def process_predictions(self, predicted_volumes, raw_volumes_predicted):
 
-        averaged_prediction = np.mean(predicted_volumes, axis = 0)
-        #stan_dev_prediction = np.std(predicted_volumes, axis = 0)
-        #stan_dev_prediction = np.sum(stan_dev_prediction, axis = 3)
+        if self.repeat_overlap > 1:
+            averaged_prediction = np.mean(predicted_volumes, axis = 0)
+            #stan_dev_prediction = np.std(predicted_volumes, axis = 0)
+            #stan_dev_prediction = np.sum(stan_dev_prediction, axis = 3)
+        else:
+            averaged_prediction = predicted_volumes
 
         # Discretising the probabilistic output
         discretised_prediction = np.reshape(averaged_prediction, (-1, 4))
         most_probable_classes = np.argmax(discretised_prediction, axis=1)
         discretised_prediction = np.zeros_like(discretised_prediction)
         discretised_prediction[np.arange(discretised_prediction.shape[0]), most_probable_classes] = 1
-        discretised_prediction = np.reshape(discretised_prediction,
+
+        if self.whole_volume:
+            discretised_prediction = np.reshape(
+                discretised_prediction, 
+                ((averaged_prediction.shape[0], 
+                  averaged_prediction.shape[1], 
+                  averaged_prediction.shape[2], 4)))
+
+        else:
+            discretised_prediction = np.reshape(discretised_prediction,
                                       ((self.patch_arrangement[0] * self.patch_size,
                                         self.patch_arrangement[1] * self.patch_size,
                                         self.patch_arrangement[2] * self.patch_size, 4)))
 
-        averaged_prediction = self.unpad(averaged_prediction)
-        discretised_prediction = self.unpad(discretised_prediction)
-        #stan_dev_prediction = self.unpad(stan_dev_prediction)
-        raw_volumes_predicted = self.unpad(raw_volumes_predicted)
+            averaged_prediction = self.unpad(averaged_prediction[0])
+            discretised_prediction = self.unpad(discretised_prediction)
+            #stan_dev_prediction = self.unpad(stan_dev_prediction)
+            raw_volumes_predicted = self.unpad(raw_volumes_predicted)
+
 
         return (predicted_volumes, averaged_prediction, discretised_prediction,
                 raw_volumes_predicted)
 
     def eval_volume(self, image_path, seg_path=[0], overlapping_patches=5,
-                    spatial_offset=0, repeat_overlap=1, save_avg=False):
+                    spatial_offset=0, repeat_overlap=1, save_avg=False, 
+                    show_canonical=False):
+
+        self.repeat_overlap = repeat_overlap
 
         if spatial_offset == 0:
             spatial_offset = int((self.patch_size / 2) / overlapping_patches)
@@ -903,43 +949,58 @@ class UnetEvaluator(PatchSequence):
         #  differences in the predictions, for uncertainty inferences
         overlapped_predictions = []
         for i in range(repeat_overlap):
-            print("Going to produce fully overlapped prediction %s out of %s for "
-                  "confidence inference" % (i, repeat_overlap))
-            # Predict overlapping volumes
-            (predicted_volumes, 
-             raw_volumes_predicted, 
-             predicted_volume_still_in_batches) = self.predict_overlapping_volumes(
-                image_path, overlapping_patches, spatial_offset)
+            if repeat_overlap > 1:
+                print("Going to produce fully overlapped prediction %s out of %s for "
+                      "confidence inference" % (i, repeat_overlap))
+            
+            # to do: lots of variables being passed back and forward for no reason, just make them class variables
+            if self.whole_volume:
+                (predicted_volumes, raw_volumes_predicted) = self.predict_whole_volume(image_path)
+                # print("Dimensions of predicted_volumes: ", predicted_volumes.shape)
+                # print("Dimensions of raw_volumes_predicted: ", raw_volumes_predicted.shape)
+
+            else:
+                (predicted_volumes, 
+                raw_volumes_predicted, 
+                predicted_volume_still_in_batches) = self.predict_overlapping_volumes(
+                    image_path, overlapping_patches, spatial_offset)
 
             (individual_predictions,
-             averaged_prediction,
-             discretised_prediction,
-             raw_volumes_predicted) = self.process_predictions(predicted_volumes, raw_volumes_predicted)
+            averaged_prediction,
+            discretised_prediction,
+            raw_volumes_predicted) = self.process_predictions(
+                predicted_volumes, raw_volumes_predicted)
+
+            # print("Shape of discretised_prediction", discretised_prediction.shape)
 
             overlapped_predictions.append(averaged_prediction)
 
-            # Produce confidence inference on the fly
-            print("overlapped_predictions len before np.std is ", len(overlapped_predictions))
-            stan_dev_prediction = np.std(overlapped_predictions, axis=0)
-            print("stan_dev_prediction shape right after np.std is", stan_dev_prediction.shape)
-            stan_dev_prediction = np.sum(stan_dev_prediction, axis=3)
+            if repeat_overlap > 1:
+                # Produce confidence inference on the fly
+                print("overlapped_predictions len before np.std is ", len(overlapped_predictions))
+                stan_dev_prediction = np.std(overlapped_predictions, axis=0)
+                print("stan_dev_prediction shape right after np.std is", stan_dev_prediction.shape)
+                stan_dev_prediction = np.sum(stan_dev_prediction, axis=3)
 
             # On the fly visualisation
             if self.print_every_overlap:
                 visualise_3_axes(stan_dev_prediction)
                 visualise_3_axes(averaged_prediction[:, :, :, :3])
 
-        # Produce standard deviation from multiple fully overlapped (and therefore
-        #  comparable) predicted volumes
-        stan_dev_prediction = np.std(overlapped_predictions, axis = 0)
-        stan_dev_prediction = np.sum(stan_dev_prediction, axis = 3)
+        if repeat_overlap > 1:
+            # Produce standard deviation from multiple fully overlapped (and therefore
+            #  comparable) predicted volumes
+            stan_dev_prediction = np.std(overlapped_predictions, axis = 0)
+            stan_dev_prediction = np.sum(stan_dev_prediction, axis = 3)
 
         # Load the segmentations and combine them. Assumes that if no
         #  c1 (white) segmentation given, that none were
         if len(seg_path) == 3:
+            # print("Segmentations present")
             seg_path, seg_path_2, seg_path_3 = seg_path[0], seg_path[1], seg_path[2]
             segs_present = True
         else:
+            # print("Segmentations not present")
             segs_present = False
 
         # TODO: make this work with arbitrary number of segmentations
@@ -951,23 +1012,30 @@ class UnetEvaluator(PatchSequence):
             SPM_volume = np.array(SPM_volume)
             SPM_volume = np.moveaxis(SPM_volume, 0, 3)
             SPM_shape = SPM_volume.shape
-            print("Dimensions of the combined segmentations is: ", SPM_volume.shape)
+            # print("Dimensions of the combined segmentations (from file) is: ", SPM_volume.shape)
         else:
-            print("No segmentations provided (at least for segf_path) so "
-                  "segmentation will be set to zero")
+            # print("No segmentations provided (at least for seg_path) so "
+            #       "segmentation will be set to zero")
             SPM_volume = np.zeros_like(raw_volumes_predicted)
             SPM_shape = SPM_volume.shape
 
+        ########## Debugging code ##########
+        # print("Dimensions of raw_volumes_predicted is: ", raw_volumes_predicted.shape)
+        # print("Dimensions of averaged_prediction is: ", averaged_prediction.shape)
+        # print("Dimensions of discretised_prediction is: ", discretised_prediction.shape)
+
+        ########## Display the images ##########
         visualise_vol_list([raw_volumes_predicted,
                             averaged_prediction[:, :, :, :3],
-                            stan_dev_prediction,
-                            discretised_prediction[:, :, :, :3],
+                            # stan_dev_prediction,
+                            # discretised_prediction[:, :, :, :3],
                             SPM_volume])
 
         # Display nice canonical images for e.g. poster presentations
-        visualise_canonical(raw_volumes_predicted)
-        visualise_canonical(averaged_prediction[:, :, :, :3])
-        visualise_canonical(SPM_volume)
+        if show_canonical:
+            visualise_canonical(raw_volumes_predicted)
+            visualise_canonical(averaged_prediction[:, :, :, :3])
+            visualise_canonical(SPM_volume)
 
         # Saves the predictions in the same directory as the raw image
         if save_avg:
@@ -984,5 +1052,24 @@ class UnetEvaluator(PatchSequence):
 
             nib.save(pred_nifti, new_filename)
 
-        return averaged_prediction, discretised_prediction, SPM_volume, predicted_volume_still_in_batches
+        return averaged_prediction, discretised_prediction, SPM_volume
+
+    def eval_nifti_categoriser(self, nifti_categoriser, params=None, limit=None):
+
+        # build_train_evaluate can pass in parameter dictionary,
+        #  very useful for e.g. histogram equalisation
+        self.params = params
+
+        for i in range(len(nifti_categoriser.raw)):
+
+            self.eval_volume(
+                [nifti_categoriser.raw[i]], 
+                [nifti_categoriser.seg_1[i],
+                 nifti_categoriser.seg_2[i],
+                 nifti_categoriser.seg_3[i]], overlapping_patches=1,
+                    spatial_offset=1, repeat_overlap=1)
+
+            if limit and limit == i + 1: break
+
+        return
 
